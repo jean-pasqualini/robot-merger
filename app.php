@@ -1,179 +1,88 @@
 <?php
 
-namespace App;
 
-use Gitlab\Client;
-use Gitlab\Model\MergeRequest;
-use Gitlab\Model\Project;
+class Matrice {
 
-require_once __DIR__.'/vendor/autoload.php';
+    private $data = [];
 
-class Configuration {
-    public function __construct(array $configuration)
-    {
-        $this->configuration = $configuration;
+    private $count;
+
+    private $type;
+
+    private $strict;
+
+    public function setColumnDef(int $count, string $type, bool $strict = true) {
+        $this->count = $count;
+        $this->type = $type;
+        $this->strict = $strict;
     }
 
-    public function getGitlabUrl(): string
-    {
-        return $this->configuration['gitlab_url'];
-    }
-
-    public function getGitlabToken(): string
-    {
-        return $this->configuration['gitlab_token'];
-    }
-
-    public function getProjectId(): string
-    {
-        return $this->configuration['project_id'];
-    }
-}
-
-class AutoMerger {
-    private $jetonStorage;
-    private $client;
-    private $project;
-
-    public function __construct(JetonStorage $storage, Client $client, Project $project)
-    {
-        $this->jetonStorage = $storage;
-        $this->client = $client;
-        $this->project = $project;
-    }
-
-    public function execute()
-    {
-        $mrs = $this->client->api('mr')->all(365, ['labels' => 'Ready for merge', 'state' => 'opened']);
-        foreach ($mrs as $mr) {
-            $mrModel = MergeRequest::fromArray($this->client, $this->project, $mr);
-
-            echo 'Mr '.$mrModel->title. ' de '.$mrModel->author->name.'('.$mrModel->author->id.')'.PHP_EOL;
-
-            $jetonsDisponible = $this->jetonStorage->getCountJeton($mrModel->author->id);
-
-            echo $jetonsDisponible.' jetons disponible'.PHP_EOL;
-
-            if ($jetonsDisponible < 1) {
-                echo 'Envoie d\'un message sur slack, il faut que tu review pour pouvoir merger ta pr (lien)'.PHP_EOL;
-                continue;
+    /**
+     * @param array $line
+     * @param string|null $lineName
+     * @throws Exception
+     */
+    public function addLine(array $line, string $lineName = null) {
+        if (\count($line) != $this->count) {
+            if (!$this->strict) {
+                return;
             }
 
-            try {
-                echo 'Je merge automatiquement avec le message "'.$mrModel->title.' (merged by robot)"'.PHP_EOL;
-                $this->jetonStorage->useJeton($mrModel->author->id);
-            } catch (\Exception $e) {
-                echo 'Pour une raison x, le merge automatique à été impossible'.PHP_EOL;
+            throw new \Exception(sprintf(
+                'this line not match size expected (expected: %d, actual: %d)',
+                $this->count,
+                \count($line)
+            ));
+        }
+
+        if (!$lineName) {
+            $lineName = \count($this->data) - 1 ?: 0;
+        }
+
+        foreach ($line as $value) {
+            $this->addLineValue($lineName, $value);
+        }
+    }
+
+    /**
+     * @param $lineName
+     * @param $value
+     * @throws Exception
+     */
+    private function addLineValue($lineName, $value)
+    {
+        $composedType = explode('::', $this->type);
+
+        if (gettype($value) !== $composedType[0]) {
+            if (!$this->strict) {
+                return;
             }
+
+            throw new \Exception(sprintf(
+                'this line not match type expected (expected: %d, actual: %d)',
+                $composedType[0],
+                gettype($value)
+            ));
         }
 
+        if (!empty($composedType[1]) && get_class($value) !== $composedType[1]) {
+            return;
+        }
+
+        $this->data[$lineName][] = $value;
+    }
+
+    public function toArray() {
+        return $this->data;
     }
 }
 
 
-class JetonStorage {
-    private $jetons = [
-        88 => 5
-    ];
+$matrice = new Matrice();
+$matrice->setColumnDef(3, 'integer', false);
+$matrice->addLine(['a', 'b', 'c']);
+$matrice->addLine([5, 10, 15]);
+$matrice->addLine([5, 10, 15, 16]);
+$matrice->addLine([5, 'd', 15]);
 
-    public function getCountJeton($authorId)
-    {
-        return $this->jetons[$authorId];
-    }
-
-    public function hasJeton($authorId)
-    {
-        return $this->getCountJeton($authorId) > 0;
-    }
-
-    public function useJeton($authorId)
-    {
-        $this->jetons[$authorId]--;
-    }
-
-    public function addJeton($authorId)
-    {
-        if (!isset($this->jetons[$authorId])) {
-            $this->jetons[$authorId] = 0;
-        }
-
-        $this->jetons[$authorId]++;
-    }
-}
-
-class ReviewerMemory {
-    private $mrReviewerByUser = [
-        // id author => [ids mrs]
-    ];
-
-    public function declareReview($authorId, $mrId)
-    {
-        if (!isset($this->mrReviewerByUser[$authorId])) {
-            $this->mrReviewerByUser[$authorId] = [];
-        }
-
-        if (!in_array($mrId, $this->mrReviewerByUser[$authorId])) {
-            $this->mrReviewerByUser[$authorId][] = $mrId;
-
-            return true;
-        }
-
-        return false;
-    }
-}
-
-class JetonCollector {
-
-    private $jetonStorage;
-    private $reviewerMemory;
-    private $client;
-    private $project;
-
-    public function __construct(JetonStorage $storage, ReviewerMemory $reviewerMemory, Client $client, Project $project)
-    {
-        $this->reviewerMemory = $reviewerMemory;
-        $this->jetonStorage = $storage;
-        $this->client = $client;
-        $this->project = $project;
-    }
-
-    public function execute()
-    {
-        $mrs = $this->client->api('mr')->all(365, ['labels' => 'Ready For Review', 'state' => 'opened']);
-        foreach ($mrs as $mr) {
-            $mrModel = MergeRequest::fromArray($this->client, $this->project, $mr);
-
-            echo 'Mr ' . $mrModel->title . ' de ' . $mrModel->author->name . '(' . $mrModel->author->id . ')' . PHP_EOL;
-
-            $comments = $mrModel->showComments();
-
-            foreach ($comments as $comment) {
-                if ($this->reviewerMemory->declareReview($comment->author->id, $mrModel->id)) {
-                    $this->jetonStorage->addJeton($comment->author->id);
-                    echo "\t".'+1 jeton pour '.$comment->author->name.PHP_EOL;
-                }
-            }
-        }
-    }
-}
-
-
-$configuration = new Configuration(parse_ini_file(__DIR__.'/setting.ini'));
-
-$client = \Gitlab\Client::create($configuration->getGitlabUrl())
-    ->authenticate($configuration->getGitlabToken(), \Gitlab\Client::AUTH_URL_TOKEN)
-;
-
-$project = Project::fromArray($client, $client->api('projects')->show($configuration->getProjectId()));
-
-
-$jetonStorage = new JetonStorage();
-$reviewerMemory = new ReviewerMemory();
-
-$autoMerged = new AutoMerger($jetonStorage, $client, $project);
-$jetonCollector = new JetonCollector($jetonStorage, $reviewerMemory, $client, $project);
-
-$jetonCollector->execute();
-
-
-// On parcours la liste des mr pour savoir les discutions en cours
+var_dump($matrice->toArray());
