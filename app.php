@@ -9,11 +9,14 @@ class Matrice {
 
     private $type;
 
-    private $strict;
+    private $strict = true;
 
-    public function setColumnDef(int $count, string $type, bool $strict = true) {
+    private $columnsKeys = [];
+
+    public function setColumnDef(int $count, string $type, array $columnsKeys = [], bool $strict = true) {
         $this->count = $count;
         $this->type = $type;
+        $this->columnsKeys = $columnsKeys;
         $this->strict = $strict;
     }
 
@@ -39,8 +42,8 @@ class Matrice {
             $lineName = \count($this->data) - 1 ?: 0;
         }
 
-        foreach ($line as $value) {
-            $this->addLineValue($lineName, $value);
+        foreach ($line as $key => $value) {
+            $this->addLineValue($lineName, $key, $value);
         }
     }
 
@@ -49,7 +52,7 @@ class Matrice {
      * @param $value
      * @throws Exception
      */
-    private function addLineValue($lineName, $value)
+    private function addLineValue($lineName, string $key = null, $value)
     {
         $composedType = explode('::', $this->type);
 
@@ -59,9 +62,21 @@ class Matrice {
             }
 
             throw new \Exception(sprintf(
-                'this line not match type expected (expected: %d, actual: %d)',
+                'this line not match type expected (expected: %s, actual: %s)',
                 $composedType[0],
                 gettype($value)
+            ));
+        }
+
+        if (!in_array($key, $this->columnsKeys)) {
+            if (!$this->strict) {
+                return;
+            }
+
+            throw new \Exception(sprintf(
+                'this key not match type expected (expected: %s, actual: %s)',
+                implode(', ', $this->columnsKeys),
+                $key
             ));
         }
 
@@ -69,20 +84,82 @@ class Matrice {
             return;
         }
 
-        $this->data[$lineName][] = $value;
+        $this->data[$lineName][$key] = $value;
     }
 
-    public function toArray() {
+
+    public function getColumn($name)
+    {
+        return array_column($this->data, $name);
+    }
+
+    public function columns()
+    {
+        $firstLine = reset($this->data);
+        return array_map(function($key) {
+            return array_column($this->data, $key);
+        }, array_keys($firstLine));
+    }
+
+    public function column($key)
+    {
+        return array_column($this->data, $key);
+    }
+
+    public function lines()
+    {
         return $this->data;
+    }
+
+    public function line($key)
+    {
+        return $this->data[$key];
+    }
+}
+
+class PotentialMatriceCalculator extends Matrice {
+    public function calcul(array $coeffs) {
+        $result = [];
+
+        foreach ($this->lines() as $lineName => $line) {
+            $potential = 0;
+            foreach ($line as $columnName => $value) {
+                $columnValues = $this->column($columnName);
+                $potential += (($value / max($columnValues)) * $coeffs[$columnName]);
+            }
+
+            $result[$lineName] = $potential;
+        }
+
+        return $result;
     }
 }
 
 
-$matrice = new Matrice();
-$matrice->setColumnDef(3, 'integer', false);
-$matrice->addLine(['a', 'b', 'c']);
-$matrice->addLine([5, 10, 15]);
-$matrice->addLine([5, 10, 15, 16]);
-$matrice->addLine([5, 'd', 15]);
+class PotentialEtudiantMatriceCalculator extends PotentialMatriceCalculator {
 
-var_dump($matrice->toArray());
+    public function __construct()
+    {
+        $this->setColumnDef(3, 'integer', ['red', 'blue', 'green'], true);
+    }
+
+    /**
+     * @param string $name
+     * @param array $notes
+     * @throws Exception
+     */
+    public function addEtudiantNotes(string $name, array $notes)
+    {
+        $this->addLine($notes, $name);
+    }
+}
+
+
+$potentialEtudiantCalculator = new PotentialEtudiantMatriceCalculator();
+$potentialEtudiantCalculator->addEtudiantNotes('etudian1', ['red' => 5, 'blue' => 10, 'green' => 15]);
+$potentialEtudiantCalculator->addEtudiantNotes('etudian2', ['red' => 5, 'blue' => 10, 'green' => 15]);
+$result = $potentialEtudiantCalculator->calcul(
+    ['red' => 0.5, 'blue' => 0.5, 'green' => 1.0]
+);
+
+var_dump($result);
